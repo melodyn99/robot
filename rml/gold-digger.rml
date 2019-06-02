@@ -1,0 +1,214 @@
+include "list.rmx"
+include "map.rmx"
+include "navigate.rmx"
+
+// Receive map information from server
+send ("info", ()) to SERVER;
+await ((width, height), (vision_rad, (robot_cap, max_bots))) = recv SERVER in
+println "vision range:";
+println vision_rad;
+
+// Main entrypoint for each robot
+let main (id, master) =
+
+  // Receive home base location
+  // The [home] variable is in scope for the rest of this function,
+  // and can be used to refer to the position of this robot's home base.
+  send ("look", ()) to SERVER;
+  await (home, _) :: _ = recv SERVER in
+
+  /** TODO: Excellent Scope
+    *
+    * Here is where you can initialize shared mutable memory.
+    * For demonstration, a basic counter is created below,
+    * and periodically updated in the [listen_bot] and
+    * [listen_server] functions.
+    *
+    * Feel free to modify or delete this code.
+    */
+  let gold_lst = ref [] in 
+
+  let counter = ref 0 in
+
+  /** [listen_bot bot] is an infinite loop of message passing
+    * between [SELF] and [bot] for information exchange.
+    */
+  let rec listen_bot bot =
+
+    /** TODO: Excellent Scope
+      *
+      * Here is where you can implement inter-robot communication.
+      * A basic pinging example is provided below.
+      *
+      * Feel free to modify or delete the code inside this
+      * function freely, but DO NOT delete the whole function
+      * declaration (even if you don't use it).
+      */
+
+    // Send and receive information from [bot]
+    send "ping" to bot;
+    await ping = recv bot in
+    print ("Received " ^ ping ^ " from ");
+    println bot;
+
+    // Update shared state
+    counter := !counter + 1;
+    println (!counter);
+
+    // Sleep a little before looping to prevent excessive CPU usage
+    await _ = sleep 1000 in
+    listen_bot bot
+  in
+
+  /** [listen_server ()] is an infinite loop of communication with [SERVER]
+    * and state-machine based decision logic for this robot.
+    */
+  let rec listen_server () =
+
+    /** TODO: Satisfactory, Good, and Excellent Scope
+      *
+      * Fill in the body of this function as described in the writeup.
+      *
+      * A basic example of sending and receiving map information
+      * from the server is provided for you below. 
+      */
+
+    // Access server API via [send] and [recv]
+    // send ("look", ()) to SERVER;
+    // await look = recv SERVER in
+    // println look;
+
+    /** [get_adj lst acc curr] returns a list of all the positions 
+        adjacent to [curr]. */ 
+    let rec get_adj lst acc curr = 
+      match lst with 
+      | [] -> acc 
+      | (k, v) :: t -> 
+        if adjacent k curr 
+        then get_adj t ((k, v) :: acc) curr
+        else get_adj t acc curr
+      end in 
+
+    /** [check_gold lst curr] returns the first element that is a 
+        Gold tile.*/
+    let rec check_gold lst curr = 
+      match lst with 
+      | [] -> curr
+      | (k, v) :: t -> 
+          match v with 
+          | (tile_type, _ ) -> 
+            if tile_type = "Gold"
+            then k
+            else check_gold t curr
+          end
+      end in
+
+    /** [max_gold lst acc n curr] returns the direction of a position
+        from [curr] that has the maximum amount of gold. If no 
+        position has gold, returns the initial [acc]. */
+    let rec max_gold lst acc n curr = 
+      match lst with 
+      | [] -> acc
+      | (k, v) :: t ->
+          match v with 
+          | (tile_type, tile_point) -> 
+            let point = nth 0 0 tile_point in 
+            if tile_type = "Gold" && point > n
+            then max_gold t (direction curr k) point curr
+            else max_gold t acc n curr
+          end
+      end in 
+    
+    /** [length lst] returns the length of [lst]. */
+    let rec length lst = 
+      match lst with 
+      |[] -> 0
+      |h::t -> 1 + length t 
+      end in 
+
+    /** [pick_pos lst n] returns the [n]th element of [lst]. */
+    let rec pick_pos lst n = 
+      match lst with 
+      |[] -> failwith "n is too large"
+      |h::t -> if n = 0
+               then h 
+               else pick_pos t (n-1)
+      end in 
+
+    /** [check_enemy_base pos lst] returns a position from [lst]
+        that is not the enemy base. */
+    let rec check_enemy_base pos lst = 
+      match pos with 
+      | (k, v) -> 
+        match v with 
+        | (tile_type, tile_num) -> 
+          let num = nth 0 0 tile_num in 
+          if tile_type = "Base" && num = 0 
+          then check_enemy_base (pick_pos lst (random (length lst)))
+          else k 
+        end 
+      end in 
+
+    send("look", ()) to SERVER; 
+    await (curr_pos, _) :: surr = recv SERVER in 
+    send ("inv", ()) to SERVER;
+    await inv = recv SERVER in 
+    let adj_list = get_adj surr [] curr_pos in 
+    let rand = direction curr_pos (check_enemy_base (pick_pos adj_list (random (length adj_list))) adj_list) in 
+    let dir_pos = 
+    if robot_cap = inv 
+    then (direction curr_pos home) 
+    else max_gold surr rand 0 curr_pos in
+    let pos = check_gold adj_list curr_pos in 
+    (if distance curr_pos pos = 0 || robot_cap = inv
+    then (send ("move", dir_pos) to SERVER)
+    else (send ("take", (direction curr_pos pos)) to SERVER)); 
+
+    // send("look", ()) to SERVER; 
+    // await look = recv SERVER in 
+    // println "look";
+    // println look;
+
+    // Update shared state
+    counter := !counter + 100;
+    println (!counter);
+
+    // Sleep a little before looping to prevent excessive CPU usage
+    await () = sleep 1000 in
+    listen_server ()
+  in 
+
+  /***************************************/
+  /*                                     */
+  /*                                     */
+  /* DO NOT MODIFY CODE BELOW THIS LINE. */
+  /*                                     */
+  /*                                     */
+  /***************************************/
+
+  // Start all listening function loops
+  await bots = recv master in
+  let run = map (fun bot -> listen_bot bot) bots in
+  join ((listen_server ()) :: run)
+in
+
+/** [spawn_all n] is an association list of integers to handles:
+  * [[(m1, h1); ...; (mn, hn)]], where each handle [mi] is to a
+  * server running [main] applied to argument [(mi, SELF)].
+  */
+let rec spawn_all n =
+  if n = 0 then [] else (n, spawn main with (n, SELF)) :: (spawn_all (n - 1))
+in
+
+/** [other_than bot bots] is the list of handles [h1; ...; hn] in
+  * association list [bots = [(m1, h1); ...; (mn, hn)]], minus
+  * handle [hi] where [bot = mi].
+  */
+let other_than bot bots =
+  map (fun (_, h) -> h) (filter (fun (bot', _) -> bot <> bot') bots)
+in
+
+// Spawn all bots with appropriate handle lists
+let bots = (0, SELF) :: (spawn_all (max_bots - 1)) in
+let _ = map (fun (bot, h) -> send other_than bot bots to h) bots in
+main (0, SELF)
